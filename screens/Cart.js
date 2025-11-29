@@ -11,43 +11,140 @@ import {
   StyleSheet,
   Modal,
   TextInput,
+  ActivityIndicator,
+  Alert,
+  Image,
 } from 'react-native';
 import { Card, Divider } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCart } from '../context/CartContext';
+import * as orderService from '../services/orderService';
 
 export default function Cart({ navigation }) {
-  const { cartItems } = useCart();
+  const { cartItems, clearCart } = useCart();
   const [addressModalVisible, setAddressModalVisible] = useState(false);
   const [checkoutModalVisible, setCheckoutModalVisible] = useState(false);
   const [deliveryAddress, setDeliveryAddress] = useState('Cotonou, Akpakpa');
+  const [deliveryLatitude, setDeliveryLatitude] = useState('6.3654200');
+  const [deliveryLongitude, setDeliveryLongitude] = useState('2.4183800');
   const [tempAddress, setTempAddress] = useState('');
+  const [deliveryDescription, setDeliveryDescription] = useState('');
   const [selectedNetwork, setSelectedNetwork] = useState('MTN');
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [customerName, setCustomerName] = useState('');
+  const [customerEmail, setCustomerEmail] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [deviceId, setDeviceId] = useState(null);
+  const [cartId, setCartId] = useState(null);
+  const [removingItem, setRemovingItem] = useState(null);
+  const [updatingQuantity, setUpdatingQuantity] = useState(null);
+  const { removeFromCart, updateCartQuantity } = useCart();
 
   const networks = ['MTN', 'MOOV', 'CELTIIS'];
+  const deliveryFee = 500;
 
-  const mockCartItems = cartItems;
+  // Récupérer l'ID de l'appareil et le panier au chargement
+  useEffect(() => {
+    const initializeCart = async () => {
+      try {
+        let device = await AsyncStorage.getItem('device_id');
+        if (!device) {
+          device = `device_${Date.now()}`;
+          await AsyncStorage.setItem('device_id', device);
+        }
+        setDeviceId(device);
 
-  const updateQuantity = (itemId, change) => {
-    const updatedItems = mockCartItems.map(item => {
-      if (item.id === itemId) {
-        const newQuantity = Math.max(1, item.quantity + change);
-        return { ...item, quantity: newQuantity };
+        // Récupérer ou créer le panier
+        const cart = await orderService.getOrCreateCart(device);
+        setCartId(cart.id);
+      } catch (error) {
+        console.error('Erreur initialisation panier:', error);
       }
-      return item;
-    });
-    saveCart(updatedItems);
+    };
+    initializeCart();
+  }, []);
+
+  // Retirer un article du panier
+  const handleRemoveItem = async (item) => {
+    Alert.alert(
+      'Supprimer cet article?',
+      `Êtes-vous sûr de vouloir supprimer "${item.menu_item_details?.name || item.item_name}" du panier?`,
+      [
+        {
+          text: 'Non',
+          onPress: () => {},
+          style: 'cancel'
+        },
+        {
+          text: 'Oui, supprimer',
+          onPress: async () => {
+            await removeItemFromCart(item);
+          },
+          style: 'destructive'
+        }
+      ]
+    );
   };
 
-  const removeItem = (itemId) => {
-    const updatedItems = mockCartItems.filter(item => item.id !== itemId);
-    saveCart(updatedItems);
+  const removeItemFromCart = async (item) => {
+    if (!cartId) return;
+    
+    setRemovingItem(item.id);
+    try {
+      // Retirer via l'API
+      await orderService.removeCartItem(cartId, item.id);
+      
+      // Retirer du panier local
+      removeFromCart(item.id);
+      
+      Alert.alert('Succès', 'Article supprimé du panier');
+    } catch (error) {
+      console.error('Erreur suppression:', error);
+      Alert.alert('Erreur', 'Impossible de supprimer l\'article');
+    } finally {
+      setRemovingItem(null);
+    }
+  };
+
+  // Augmenter la quantité
+  const handleIncreaseQuantity = async (item) => {
+    await updateQuantity(item, item.quantity + 1);
+  };
+
+  // Diminuer la quantité
+  const handleDecreaseQuantity = async (item) => {
+    if (item.quantity > 1) {
+      await updateQuantity(item, item.quantity - 1);
+    } else {
+      // Si quantité = 1, demander si supprimer
+      handleRemoveItem(item);
+    }
+  };
+
+  const updateQuantity = async (item, newQuantity) => {
+    if (!cartId) return;
+    
+    setUpdatingQuantity(item.id);
+    try {
+      // Mettre à jour via l'API
+      await orderService.updateCartItem(cartId, item.id, newQuantity);
+      
+      // Mettre à jour le panier local
+      updateCartQuantity(item.id, newQuantity);
+    } catch (error) {
+      console.error('Erreur mise à jour quantité:', error);
+      Alert.alert('Erreur', 'Impossible de mettre à jour la quantité');
+    } finally {
+      setUpdatingQuantity(null);
+    }
   };
 
   const calculateSubtotal = () => {
-    return mockCartItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    return cartItems.reduce((sum, item) => {
+      const itemPrice = item.size_details?.price || item.price || 0;
+      return sum + (parseFloat(itemPrice) * item.quantity);
+    }, 0);
   };
 
   const handleAddressChange = () => {
@@ -56,50 +153,112 @@ export default function Cart({ navigation }) {
   };
 
   const saveAddress = () => {
+    if (!tempAddress.trim()) {
+      Alert.alert('Erreur', 'Veuillez entrer une adresse');
+      return;
+    }
     setDeliveryAddress(tempAddress);
     setAddressModalVisible(false);
   };
 
   const handleCheckout = () => {
+    if (cartItems.length === 0) {
+      Alert.alert('Panier vide', 'Veuillez ajouter des articles avant de commander');
+      return;
+    }
     setCheckoutModalVisible(true);
   };
 
-  const confirmOrder = () => {
-    if (!phoneNumber) {
-      alert('Veuillez entrer votre numéro de téléphone');
+  const confirmOrder = async () => {
+    // Validation des champs obligatoires
+    if (!customerName.trim()) {
+      Alert.alert('Erreur', 'Veuillez entrer votre nom');
+      return;
+    }
+    if (!customerEmail.trim()) {
+      Alert.alert('Erreur', 'Veuillez entrer votre email');
+      return;
+    }
+    if (!phoneNumber.trim()) {
+      Alert.alert('Erreur', 'Veuillez entrer votre numéro de téléphone');
+      return;
+    }
+    if (!deliveryAddress.trim()) {
+      Alert.alert('Erreur', 'Veuillez entrer une adresse de livraison');
       return;
     }
 
-    // Logique de commande ici
-    console.log('Commande confirmée:', {
-      network: selectedNetwork,
-      phone: phoneNumber,
-      total,
-      items: mockCartItems
-    });
+    if (!cartId) {
+      Alert.alert('Erreur', 'Panier non initialisé');
+      return;
+    }
 
-    setCheckoutModalVisible(false);
-    // Navigation vers une page de confirmation ou de suivi
-    alert('Commande effectuée avec succès!');
+    setLoading(true);
+    try {
+      // Préparer les données de checkout
+      const checkoutData = {
+        delivery_address: deliveryAddress,
+        delivery_latitude: parseFloat(deliveryLatitude),
+        delivery_longitude: parseFloat(deliveryLongitude),
+        delivery_description: deliveryDescription,
+        customer_name: customerName,
+        customer_phone: phoneNumber,
+        customer_email: customerEmail,
+        delivery_fee: deliveryFee.toString(),
+        notes: `Paiement: ${selectedNetwork}`
+      };
+
+      // Effectuer le checkout via l'API
+      const response = await orderService.checkoutCart(cartId, checkoutData);
+      
+      setLoading(false);
+      setCheckoutModalVisible(false);
+
+      // Afficher le numéro de commande et vider le panier local
+      Alert.alert(
+        'Succès',
+        `Commande créée avec succès!\nNuméro: ${response.order_number}`,
+        [
+          {
+            text: 'Suivre la commande',
+            onPress: () => {
+              clearCart();
+              navigation.navigate('OrderTracking', { orderNumber: response.order_number });
+            }
+          },
+          {
+            text: 'Retour',
+            onPress: () => {
+              clearCart();
+              navigation.goBack();
+            }
+          }
+        ]
+      );
+    } catch (error) {
+      setLoading(false);
+      const message = error.message || 'Erreur lors de la création de la commande';
+      Alert.alert('Erreur', message);
+      console.error('Erreur checkout:', error);
+    }
   };
 
-  const deliveryFee = 500;
   const subtotal = calculateSubtotal();
   const total = subtotal + deliveryFee;
 
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={24} color="#495057" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Mon Panier</Text>
-        <View style={styles.cartBadge}>
-          <Text style={styles.cartBadgeText}>{mockCartItems.length}</Text>
-        </View>
+       <TouchableOpacity onPress={() => navigation.goBack()}>
+         <Ionicons name="arrow-back" size={24} color="#495057" />
+       </TouchableOpacity>
+       <Text style={styles.headerTitle}>Mon Panier</Text>
+       <View style={styles.cartBadge}>
+         <Text style={styles.cartBadgeText}>{cartItems.length}</Text>
+       </View>
       </View>
 
-      {mockCartItems.length === 0 ? (
+      {cartItems.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Ionicons name="cart-outline" size={100} color="#CED4DA" />
           <Text style={styles.emptyTitle}>Votre panier est vide</Text>
@@ -117,65 +276,95 @@ export default function Cart({ navigation }) {
         <>
           <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
             {/* Restaurant Info */}
-            <Card style={styles.restaurantCard}>
-              <View style={styles.restaurantHeader}>
-                <Ionicons name="storefront" size={24} color="#5D0EC0" />
-                <View style={styles.restaurantInfo}>
-                  <Text style={styles.restaurantName}>
-                    {mockCartItems[0].restaurant}
-                  </Text>
-                  <View style={styles.deliveryInfo}>
-                    <Ionicons name="time-outline" size={14} color="#868E96" />
-                    <Text style={styles.deliveryText}>30-40 min</Text>
-                  </View>
-                </View>
-              </View>
-            </Card>
+             <Card style={styles.restaurantCard}>
+               <View style={styles.restaurantHeader}>
+                 <Ionicons name="storefront" size={24} color="#5D0EC0" />
+                 <View style={styles.restaurantInfo}>
+                   <Text style={styles.restaurantName}>
+                     {cartItems[0]?.menu_item_details?.name || 'Mon Restaurant'}
+                   </Text>
+                   <View style={styles.deliveryInfo}>
+                     <Ionicons name="time-outline" size={14} color="#868E96" />
+                     <Text style={styles.deliveryText}>30-40 min</Text>
+                   </View>
+                 </View>
+               </View>
+             </Card>
 
-            {/* Cart Items */}
-            <Card style={styles.itemsCard}>
-              <Text style={styles.sectionTitle}>Articles</Text>
+             {/* Cart Items */}
+             <Card style={styles.itemsCard}>
+               <Text style={styles.sectionTitle}>Articles</Text>
 
-              {mockCartItems.map((item, index) => (
+               {cartItems.map((item, index) => (
                 <View key={item.id}>
                   {index > 0 && <Divider style={styles.itemDivider} />}
 
                   <View style={styles.cartItem}>
                     <View style={styles.itemImageContainer}>
-                      <Text style={styles.itemEmoji}>{item.image}</Text>
+                      {item.menu_item_details?.image ? (
+                        <Image
+                          source={{ uri: item.menu_item_details.image }}
+                          style={styles.itemImageReal}
+                        />
+                      ) : item.image ? (
+                        <Image
+                          source={{ uri: item.image }}
+                          style={styles.itemImageReal}
+                        />
+                      ) : (
+                        <Text style={styles.itemEmoji}>
+                          🍽️
+                        </Text>
+                      )}
                     </View>
 
                     <View style={styles.itemDetails}>
-                      <Text style={styles.itemName}>{item.name}</Text>
-                      <Text style={styles.itemPrice}>{item.price} FCFA</Text>
+                      <Text style={styles.itemName}>
+                        {item.menu_item_details?.name || item.item_name}
+                      </Text>
+                      <Text style={styles.itemPrice}>
+                        {item.size_details?.price || item.item_price} FCFA
+                      </Text>
+                      {item.special_instructions && (
+                        <Text style={styles.specialInstructions}>
+                          {item.special_instructions}
+                        </Text>
+                      )}
                     </View>
 
                     <View style={styles.quantityControls}>
-                      <TouchableOpacity
-                        style={styles.quantityButton}
-                        onPress={() => updateQuantity(item.id, -1)}
-                      >
-                        <Ionicons name="remove" size={16} color="#5D0EC0" />
-                      </TouchableOpacity>
+                       <TouchableOpacity
+                         style={styles.quantityButton}
+                         onPress={() => handleDecreaseQuantity(item)}
+                         disabled={updatingQuantity === item.id}
+                       >
+                         <Ionicons name="remove" size={16} color="#5D0EC0" />
+                       </TouchableOpacity>
 
-                      <Text style={styles.quantityText}>{item.quantity}</Text>
+                       <Text style={styles.quantityText}>{item.quantity}</Text>
 
-                      <TouchableOpacity
-                        style={styles.quantityButton}
-                        onPress={() => updateQuantity(item.id, 1)}
-                      >
-                        <Ionicons name="add" size={16} color="#5D0EC0" />
-                      </TouchableOpacity>
+                       <TouchableOpacity
+                         style={styles.quantityButton}
+                         onPress={() => handleIncreaseQuantity(item)}
+                         disabled={updatingQuantity === item.id}
+                       >
+                         <Ionicons name="add" size={16} color="#5D0EC0" />
+                       </TouchableOpacity>
+                     </View>
+
+                     <TouchableOpacity
+                       style={styles.deleteButton}
+                       onPress={() => handleRemoveItem(item)}
+                       disabled={removingItem === item.id}
+                     >
+                       {removingItem === item.id ? (
+                         <ActivityIndicator size="small" color="#F44336" />
+                       ) : (
+                         <Ionicons name="trash-outline" size={20} color="#F44336" />
+                       )}
+                     </TouchableOpacity>
                     </View>
-
-                    <TouchableOpacity
-                      style={styles.deleteButton}
-                      onPress={() => removeItem(item.id)}
-                    >
-                      <Ionicons name="trash-outline" size={20} color="#F44336" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                    </View>
               ))}
             </Card>
 
@@ -234,13 +423,14 @@ export default function Cart({ navigation }) {
             <TouchableOpacity
               style={styles.checkoutButton}
               onPress={handleCheckout}
+              disabled={loading}
             >
               <View style={styles.checkoutContent}>
                 <View>
                   <Text style={styles.checkoutButtonText}>Commander</Text>
-                  <Text style={styles.checkoutButtonSubtext}>
-                    {mockCartItems.length} article{mockCartItems.length > 1 ? 's' : ''}
-                  </Text>
+                      <Text style={styles.checkoutButtonSubtext}>
+                        {cartItems.length} article{cartItems.length > 1 ? 's' : ''}
+                      </Text>
                 </View>
                 <View style={styles.checkoutTotal}>
                   <Text style={styles.checkoutTotalText}>{total} FCFA</Text>
@@ -315,6 +505,25 @@ export default function Cart({ navigation }) {
             </View>
 
             <ScrollView style={styles.modalBody}>
+              {/* Informations client */}
+              <Text style={styles.inputLabel}>Nom complet</Text>
+              <TextInput
+                style={styles.textInput}
+                value={customerName}
+                onChangeText={setCustomerName}
+                placeholder="Ex: Jean Dupont"
+              />
+
+              <Text style={styles.inputLabel}>Email</Text>
+              <TextInput
+                style={styles.textInput}
+                value={customerEmail}
+                onChangeText={setCustomerEmail}
+                placeholder="Ex: jean.dupont@email.com"
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+
               {/* Résumé de la commande */}
               <View style={styles.orderSummary}>
                 <Text style={styles.summaryTitle}>Résumé</Text>
@@ -369,14 +578,20 @@ export default function Cart({ navigation }) {
               <TouchableOpacity
                 style={styles.cancelButton}
                 onPress={() => setCheckoutModalVisible(false)}
+                disabled={loading}
               >
                 <Text style={styles.cancelButtonText}>Annuler</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.confirmButton}
                 onPress={confirmOrder}
+                disabled={loading}
               >
-                <Text style={styles.confirmButtonText}>Confirmer</Text>
+                {loading ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.confirmButtonText}>Confirmer</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -517,6 +732,12 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
+    overflow: 'hidden',
+  },
+  itemImageReal: {
+    width: 60,
+    height: 60,
+    borderRadius: 12,
   },
   itemEmoji: {
     fontSize: 32,
@@ -535,18 +756,16 @@ const styles = StyleSheet.create({
     color: '#868E96',
     marginTop: 4,
   },
+  specialInstructions: {
+    fontSize: 12,
+    color: '#868E96',
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
   quantityControls: {
     flexDirection: 'row',
     alignItems: 'center',
     marginRight: 12,
-  },
-  quantityButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#FFE5D9',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   quantityText: {
     fontSize: 14,
@@ -555,9 +774,6 @@ const styles = StyleSheet.create({
     marginHorizontal: 12,
     minWidth: 20,
     textAlign: 'center',
-  },
-  deleteButton: {
-    padding: 8,
   },
   itemDivider: {
     marginVertical: 8,

@@ -6,6 +6,8 @@ import { NavigationContainer } from '@react-navigation/native';
 import { Provider as PaperProvider } from 'react-native-paper';
 import { CartProvider } from './context/CartContext';
 import { AuthProvider } from './context/AuthContext';
+import { NotificationProvider } from './context/NotificationContext';
+import { PaymentProvider } from './context/PaymentContext';
 import AppNavigator from './navigation/AppNavigator';
 import { LogBox } from 'react-native';
 
@@ -17,9 +19,13 @@ export default function App() {
     <PaperProvider>
       <AuthProvider>
         <CartProvider>
-          <NavigationContainer>
-            <AppNavigator />
-          </NavigationContainer>
+          <NotificationProvider>
+            <PaymentProvider>
+              <NavigationContainer>
+                <AppNavigator />
+              </NavigationContainer>
+            </PaymentProvider>
+          </NotificationProvider>
         </CartProvider>
       </AuthProvider>
     </PaperProvider>

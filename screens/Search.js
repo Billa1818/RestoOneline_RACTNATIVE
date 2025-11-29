@@ -1,7 +1,7 @@
 // ============================================
-// screens/Search.js - Page Recherche
+// screens/Search.js - Configuré avec API réelle
 // ============================================
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,103 +11,141 @@ import {
   SafeAreaView,
   TextInput,
   StyleSheet,
+  ActivityIndicator,
+  RefreshControl,
+  Alert,
 } from 'react-native';
-import { Card, Chip, IconButton } from 'react-native-paper';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Card, IconButton } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { useCart } from '../context/CartContext';
+import MenuService from '../services/MenuService';
+import * as orderService from '../services/orderService';
 
-export default function Search({ navigation }) {
+export default function Search({ navigation, route }) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [selectedCategory, setSelectedCategory] = useState(route?.params?.categorySlug || 'all');
+  const [categories, setCategories] = useState([]);
+  const [dishes, setDishes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [addingToCart, setAddingToCart] = useState(null);
+  const [deviceId, setDeviceId] = useState(null);
   const { isFavorite, addToFavorites, removeFromFavorites, addToCart } = useCart();
 
-  const categories = [
-    { id: 'all', name: 'Tout', icon: 'apps' },
-    { id: 'entrees', name: 'Entrées', icon: 'leaf' },
-    { id: 'plats', name: 'Plats', icon: 'restaurant' },
-    { id: 'desserts', name: 'Desserts', icon: 'cupcake' },
-    { id: 'boissons', name: 'Boissons', icon: 'water' },
-  ];
+  // Récupérer le device_id au chargement
+  useEffect(() => {
+    const getDeviceId = async () => {
+      try {
+        let device = await AsyncStorage.getItem('device_id');
+        if (!device) {
+          device = `device_${Date.now()}`;
+          await AsyncStorage.setItem('device_id', device);
+        }
+        setDeviceId(device);
+      } catch (error) {
+        console.error('Erreur device_id:', error);
+      }
+    };
+    getDeviceId();
+  }, []);
 
-  const allDishes = [
-    {
-      id: 1,
-      name: 'Poulet Yassa',
-      description: 'Poulet mariné aux oignons et citron',
-      price: 3500,
-      category: 'plats',
-      image: 'https://picsum.photos/seed/poulet/300/200',
-      rating: 4.8,
-      reviews: 124,
-      time: '30 min',
-      popular: true,
-    },
-    {
-      id: 2,
-      name: 'Riz au Gras',
-      description: 'Riz cuisiné à la sauce tomate',
-      price: 2500,
-      category: 'plats',
-      image: 'https://picsum.photos/seed/riz/300/200',
-      rating: 4.6,
-      reviews: 98,
-      time: '25 min',
-    },
-    {
-      id: 3,
-      name: 'Salade Niçoise',
-      description: 'Salade fraîche aux légumes',
-      price: 1500,
-      category: 'entrees',
-      image: 'https://picsum.photos/seed/salade/300/200',
-      rating: 4.5,
-      reviews: 67,
-      time: '15 min',
-    },
-    {
-      id: 4,
-      name: 'Tiramisu',
-      description: 'Dessert italien traditionnel',
-      price: 1800,
-      category: 'desserts',
-      image: 'https://picsum.photos/seed/tiramisu/300/200',
-      rating: 4.9,
-      reviews: 89,
-      time: '10 min',
-    },
-    {
-      id: 5,
-      name: 'Jus Bissap',
-      description: 'Jus naturel d\'hibiscus',
-      price: 800,
-      category: 'boissons',
-      image: 'https://picsum.photos/seed/bissap/300/200',
-      rating: 4.7,
-      reviews: 56,
-      time: '5 min',
-    },
-    {
-      id: 6,
-      name: 'Alloco Poisson',
-      description: 'Bananes plantains frites + poisson',
-      price: 2000,
-      category: 'plats',
-      image: 'https://picsum.photos/seed/alloco/300/200',
-      rating: 4.7,
-      reviews: 156,
-      time: '20 min',
-      popular: true,
-    },
-  ];
+  // Icônes par défaut pour les catégories
+  const categoryIcons = {
+    'entrees': 'leaf',
+    'plats': 'restaurant',
+    'plats-principaux': 'restaurant',
+    'desserts': 'ice-cream',
+    'boissons': 'water',
+  };
 
-  const filteredDishes = allDishes.filter((dish) => {
-    const matchesSearch = dish.name
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
-    const matchesCategory =
-      selectedCategory === 'all' || dish.category === selectedCategory;
-    return matchesSearch && matchesCategory;
-  });
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useEffect(() => {
+    // Charger les plats quand la catégorie change
+    if (!loading) {
+      loadDishes();
+    }
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    // Si on arrive depuis Home avec une catégorie
+    if (route?.params?.categorySlug) {
+      setSelectedCategory(route.params.categorySlug);
+    }
+  }, [route?.params?.categorySlug]);
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      await Promise.all([
+        loadCategories(),
+        loadDishes(),
+      ]);
+    } catch (error) {
+      console.error('Erreur lors du chargement:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadCategories = async () => {
+    try {
+      const result = await MenuService.getCategories();
+      if (result.success && Array.isArray(result.data)) {
+        // Ajouter la catégorie "Tout" au début
+        setCategories([
+          { id: 'all', slug: 'all', name: 'Tout', icon: null },
+          ...result.data
+        ]);
+      } else {
+        console.error('Erreur catégories:', result.error);
+        setCategories([{ id: 'all', slug: 'all', name: 'Tout', icon: null }]);
+      }
+    } catch (error) {
+      console.error('Exception catégories:', error);
+      setCategories([{ id: 'all', slug: 'all', name: 'Tout', icon: null }]);
+    }
+  };
+
+  const loadDishes = async () => {
+    try {
+      const filters = {};
+      
+      // Ajouter le filtre de catégorie si ce n'est pas "all"
+      if (selectedCategory && selectedCategory !== 'all') {
+        filters.category = selectedCategory;
+      }
+      
+      // Ajouter le filtre de recherche si présent
+      if (searchQuery.trim()) {
+        filters.search = searchQuery.trim();
+      }
+
+      const result = await MenuService.getMenuItems(filters);
+      if (result.success && Array.isArray(result.data)) {
+        setDishes(result.data);
+      } else {
+        console.error('Erreur plats:', result.error);
+        setDishes([]);
+      }
+    } catch (error) {
+      console.error('Exception plats:', error);
+      setDishes([]);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  };
+
+  const handleSearch = () => {
+    loadDishes();
+  };
 
   const toggleFavorite = (dish) => {
     if (isFavorite(dish.id)) {
@@ -116,6 +154,63 @@ export default function Search({ navigation }) {
       addToFavorites(dish);
     }
   };
+
+  const handleAddToCart = (dish) => {
+    // Toujours rediriger vers DishDetails pour ajouter au panier
+    navigation.navigate('DishDetails', { dish });
+  };
+
+  const addToCartSimple = async (dish) => {
+    if (!deviceId) {
+      Alert.alert('Erreur', 'ID appareil non trouvé');
+      return;
+    }
+
+    setAddingToCart(dish.id);
+    try {
+      // Récupérer ou créer le panier
+      const cart = await orderService.getOrCreateCart(deviceId);
+      
+      // Utiliser le prix min_price du plat comme prix par défaut
+      // (les formats complets sont récupérés dans DishDetails.js)
+      const sizeId = 1; // Format par défaut
+      const price = dish.min_price;
+      
+      await orderService.addItemToCart(
+        cart.id,
+        dish.id,
+        sizeId,
+        1,
+        ''
+      );
+
+      // Ajouter au panier local aussi
+      addToCart({
+        ...dish,
+        price: price,
+        size: sizeId,
+        menu_item_details: dish
+      });
+
+      Alert.alert('Succès', `${dish.name} ajouté au panier`);
+    } catch (error) {
+      console.error('Erreur ajout panier:', error);
+      Alert.alert('Erreur', 'Impossible d\'ajouter au panier');
+    } finally {
+      setAddingToCart(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#5D0EC0" />
+          <Text style={styles.loadingText}>Chargement...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -128,10 +223,15 @@ export default function Search({ navigation }) {
             placeholder="Rechercher un plat..."
             value={searchQuery}
             onChangeText={setSearchQuery}
+            onSubmitEditing={handleSearch}
             placeholderTextColor="#999"
+            returnKeyType="search"
           />
           {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')}>
+            <TouchableOpacity onPress={() => {
+              setSearchQuery('');
+              loadDishes();
+            }}>
               <Ionicons name="close-circle" size={20} color="#999" />
             </TouchableOpacity>
           )}
@@ -145,53 +245,74 @@ export default function Search({ navigation }) {
         style={styles.categoriesScroll}
         contentContainerStyle={styles.categoriesContainer}
       >
-        {categories.map((cat) => (
-          <TouchableOpacity
-            key={cat.id}
-            onPress={() => setSelectedCategory(cat.id)}
-            style={[
-              styles.categoryChip,
-              selectedCategory === cat.id && styles.categoryChipSelected,
-            ]}
-          >
-            <Ionicons
-              name={cat.icon}
-              size={20}
-              color={selectedCategory === cat.id ? '#fff' : '#666'}
-              style={{ marginRight: 6 }}
-            />
-            <Text
+        {categories.map((cat) => {
+          const icon = cat.slug === 'all' ? 'apps' : categoryIcons[cat.slug] || 'pricetag';
+          const isSelected = selectedCategory === cat.slug;
+          
+          return (
+            <TouchableOpacity
+              key={cat.id}
+              onPress={() => setSelectedCategory(cat.slug)}
               style={[
-                styles.categoryChipText,
-                selectedCategory === cat.id && styles.categoryChipTextSelected,
+                styles.categoryChip,
+                isSelected && styles.categoryChipSelected,
               ]}
             >
-              {cat.name}
-            </Text>
-          </TouchableOpacity>
-        ))}
+              <Ionicons
+                name={icon}
+                size={20}
+                color={isSelected ? '#fff' : '#666'}
+                style={{ marginRight: 6 }}
+              />
+              <Text
+                style={[
+                  styles.categoryChipText,
+                  isSelected && styles.categoryChipTextSelected,
+                ]}
+              >
+                {cat.name}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
       </ScrollView>
 
       {/* Results */}
-      <ScrollView showsVerticalScrollIndicator={false} style={styles.resultsContainer}>
+      <ScrollView 
+        showsVerticalScrollIndicator={false} 
+        style={styles.resultsContainer}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
         <Text style={styles.resultsCount}>
-          {filteredDishes.length} résultat{filteredDishes.length > 1 ? 's' : ''}
+          {dishes.length} résultat{dishes.length > 1 ? 's' : ''}
         </Text>
 
-        {filteredDishes.length === 0 ? (
+        {dishes.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Ionicons name="fast-food-outline" size={80} color="#ccc" />
             <Text style={styles.emptyText}>Aucun résultat</Text>
             <Text style={styles.emptySubtext}>
-              Essayez une autre recherche
+              {searchQuery ? 'Essayez une autre recherche' : 'Aucun plat disponible'}
             </Text>
           </View>
         ) : (
           <View style={styles.dishesGrid}>
-            {filteredDishes.map((dish) => (
+            {dishes.map((dish) => (
               <Card key={dish.id} style={styles.dishCard}>
                 <TouchableOpacity onPress={() => navigation.navigate('DishDetails', { dish })}>
-                  <Image source={{ uri: dish.image }} style={styles.dishImage} />
+                  {dish.image ? (
+                    <Image 
+                      source={{ uri: dish.image }} 
+                      style={styles.dishImage}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={[styles.dishImage, styles.placeholderImage]}>
+                      <Ionicons name="image-outline" size={40} color="#ccc" />
+                    </View>
+                  )}
                   
                   <IconButton
                     icon={isFavorite(dish.id) ? 'heart' : 'heart-outline'}
@@ -205,33 +326,51 @@ export default function Search({ navigation }) {
                     <Text style={styles.dishName} numberOfLines={1}>
                       {dish.name}
                     </Text>
-                    <Text style={styles.dishDescription} numberOfLines={2}>
-                      {dish.description}
-                    </Text>
+                    {dish.description && (
+                      <Text style={styles.dishDescription} numberOfLines={2}>
+                        {dish.description}
+                      </Text>
+                    )}
 
                     <View style={styles.dishFooter}>
                       <View style={styles.ratingContainer}>
                         <Ionicons name="star" size={14} color="#FFC107" />
-                        <Text style={styles.rating}>{dish.rating}</Text>
+                        <Text style={styles.rating}>
+                          {parseFloat(dish.average_rating || 0).toFixed(1)}
+                        </Text>
                       </View>
-                      <Text style={styles.price}>{dish.price} F</Text>
+                      <Text style={styles.price}>
+                        {parseFloat(dish.min_price).toFixed(0)} F
+                      </Text>
                     </View>
 
-                    <View style={styles.dishTime}>
-                      <Ionicons name="time-outline" size={12} color="#5D0EC0" />
-                      <Text style={styles.timeText}>{dish.time}</Text>
-                    </View>
+                    {dish.preparation_time && (
+                      <View style={styles.dishTime}>
+                        <Ionicons name="time-outline" size={12} color="#5D0EC0" />
+                        <Text style={styles.timeText}>{dish.preparation_time} min</Text>
+                      </View>
+                    )}
 
                     <TouchableOpacity
-                      style={styles.addToCartButton}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        addToCart(dish);
-                      }}
-                    >
-                      <Ionicons name="add" size={16} color="#fff" />
-                      <Text style={styles.addToCartText}>Ajouter</Text>
-                    </TouchableOpacity>
+                       style={[
+                         styles.addToCartButton,
+                         addingToCart === dish.id && { opacity: 0.6 }
+                       ]}
+                       onPress={(e) => {
+                         e.stopPropagation();
+                         handleAddToCart(dish);
+                       }}
+                       disabled={addingToCart === dish.id}
+                     >
+                       {addingToCart === dish.id ? (
+                         <ActivityIndicator size="small" color="#fff" />
+                       ) : (
+                         <>
+                           <Ionicons name="add" size={16} color="#fff" />
+                           <Text style={styles.addToCartText}>Ajouter</Text>
+                         </>
+                       )}
+                     </TouchableOpacity>
                   </View>
                 </TouchableOpacity>
               </Card>
@@ -250,6 +389,16 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F8F9FA',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: '#666',
   },
   searchHeader: {
     backgroundColor: '#fff',
@@ -344,6 +493,11 @@ const styles = StyleSheet.create({
   dishImage: {
     width: '100%',
     height: 120,
+  },
+  placeholderImage: {
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   favoriteButton: {
     position: 'absolute',

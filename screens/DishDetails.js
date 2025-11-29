@@ -1,7 +1,7 @@
 // ============================================
-// screens/DishDetails.js
+// screens/DishDetails.js - Configuré avec API réelle
 // ============================================
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,9 @@ import {
   StyleSheet,
   Alert,
   TextInput,
+  ActivityIndicator,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   Card,
@@ -21,27 +23,74 @@ import {
 } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { useCart } from '../context/CartContext';
+import MenuService from '../services/MenuService';
+import * as orderService from '../services/orderService';
 
 export default function DishDetails({ route, navigation }) {
-  const { dish } = route.params;
+  const { dish: initialDish } = route.params;
+  const [dish, setDish] = useState(initialDish);
   const [quantity, setQuantity] = useState(1);
-  const [isFavorite, setIsFavorite] = useState(false);
-  const [selectedSize, setSelectedSize] = useState('normal'); // petit, normal, grand
+  const [selectedSize, setSelectedSize] = useState(null);
   const [specialNotes, setSpecialNotes] = useState('');
-  const { addToCart: addToCartContext, isFavorite: checkIsFavorite, addToFavorites, removeFromFavorites } = useCart();
+  const [loading, setLoading] = useState(false);
+  const [addingToCart, setAddingToCart] = useState(false);
+  const [sizes, setSizes] = useState([]);
+  const [deviceId, setDeviceId] = useState(null);
+  
+  const { 
+    addToCart: addToCartContext, 
+    isFavorite, 
+    addToFavorites, 
+    removeFromFavorites 
+  } = useCart();
 
-  // Prix selon la taille
-  const sizeMultipliers = {
-    petit: 0.7,
-    normal: 1,
-    grand: 1.5,
+  // Récupérer le device_id au chargement
+  useEffect(() => {
+    const getDeviceId = async () => {
+      try {
+        let device = await AsyncStorage.getItem('device_id');
+        if (!device) {
+          device = `device_${Date.now()}`;
+          await AsyncStorage.setItem('device_id', device);
+        }
+        setDeviceId(device);
+      } catch (error) {
+        console.error('Erreur device_id:', error);
+      }
+    };
+    getDeviceId();
+  }, []);
+
+  useEffect(() => {
+    loadDishDetails();
+  }, []);
+
+  const loadDishDetails = async () => {
+    try {
+      setLoading(true);
+      
+      // Charger les détails complets du plat
+      const result = await MenuService.getMenuItemBySlug(initialDish.slug);
+      
+      if (result.success && result.data) {
+        setDish(result.data);
+        
+        // Charger les formats si disponibles
+        if (result.data.id) {
+          const sizesResult = await MenuService.getMenuSizes(result.data.id);
+          if (sizesResult.success && sizesResult.data && sizesResult.data.length > 0) {
+            setSizes(sizesResult.data);
+            // Sélectionner le premier format par défaut
+            setSelectedSize(sizesResult.data[0].id);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Erreur chargement détails:', error);
+    } finally {
+      setLoading(false);
+    }
   };
-
-  const sizes = [
-    { id: 'petit', label: 'Petit', price: dish.price * 0.7 },
-    { id: 'normal', label: 'Normal', price: dish.price },
-    { id: 'grand', label: 'Grand', price: dish.price * 1.5 },
-  ];
 
   const increaseQuantity = () => {
     setQuantity(quantity + 1);
@@ -53,29 +102,96 @@ export default function DishDetails({ route, navigation }) {
     }
   };
 
-  const addToCart = () => {
-    if (!specialNotes.trim() && selectedSize === 'normal') {
-      // Ajout standard
-      for (let i = 0; i < quantity; i++) {
-        addToCartContext(dish);
-      }
-    } else {
-      // Ajout avec modifications
-      const customDish = {
-        ...dish,
-        size: selectedSize,
-        notes: specialNotes,
-        price: dish.price * sizeMultipliers[selectedSize],
-      };
-      for (let i = 0; i < quantity; i++) {
-        addToCartContext(customDish);
-      }
+  const addToCart = async () => {
+    // Validation
+    if (!deviceId) {
+      Alert.alert('Erreur', 'ID appareil non trouvé');
+      return;
     }
-    Alert.alert('Succès', `${quantity}x ${dish.name} (${selectedSize}) ajouté au panier`);
-    navigation.goBack();
+
+    const selectedSizeData = sizes.find(s => s.id === selectedSize);
+    if (!selectedSizeData) {
+      Alert.alert('Erreur', 'Veuillez sélectionner un format');
+      return;
+    }
+
+    setAddingToCart(true);
+    try {
+      // Récupérer ou créer le panier
+      const cart = await orderService.getOrCreateCart(deviceId);
+      
+      // Ajouter l'article au panier
+      await orderService.addItemToCart(
+        cart.id,
+        dish.id,
+        selectedSizeData.id,
+        quantity,
+        specialNotes.trim()
+      );
+
+      // Ajouter au panier local aussi
+      addToCartContext({
+        ...dish,
+        quantity: quantity,
+        special_instructions: specialNotes.trim(),
+        size: selectedSizeData.id,
+        size_details: selectedSizeData,
+        menu_item_details: dish,
+        price: selectedSizeData.price,
+      });
+
+      const sizeName = selectedSizeData.name;
+      Alert.alert(
+        'Succès', 
+        `${quantity}x ${dish.name} (${sizeName}) ajouté au panier`,
+        [
+          {
+            text: 'Continuer',
+            onPress: () => navigation.goBack()
+          },
+          {
+            text: 'Voir le panier',
+            onPress: () => navigation.navigate('Cart')
+          }
+        ]
+      );
+    } catch (error) {
+      console.error('Erreur ajout panier:', error);
+      Alert.alert('Erreur', 'Impossible d\'ajouter au panier');
+    } finally {
+      setAddingToCart(false);
+    }
   };
 
-  const totalPrice = Math.round(dish.price * sizeMultipliers[selectedSize] * quantity);
+  const toggleFavorite = () => {
+    if (isFavorite(dish.id)) {
+      removeFromFavorites(dish.id);
+    } else {
+      addToFavorites(dish);
+    }
+  };
+
+  // Calculer le prix total
+  const getCurrentPrice = () => {
+    if (sizes.length > 0 && selectedSize) {
+      const size = sizes.find(s => s.id === selectedSize);
+      return size ? size.price : dish.min_price;
+    }
+    return dish.min_price;
+  };
+
+  const totalPrice = getCurrentPrice() * quantity;
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#5D0EC0" />
+          <Text style={styles.loadingText}>Chargement...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -94,11 +210,19 @@ export default function DishDetails({ route, navigation }) {
 
         {/* Image principale */}
         <View style={styles.imageContainer}>
-          <Image
-            source={{ uri: dish.image }}
-            style={styles.mainImage}
-          />
-          {dish.popular && (
+          {dish.image ? (
+            <Image
+              source={{ uri: dish.image }}
+              style={styles.mainImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={[styles.mainImage, styles.placeholderImage]}>
+              <Ionicons name="image-outline" size={80} color="#ccc" />
+            </View>
+          )}
+          
+          {dish.is_popular && (
             <Chip
               icon="fire"
               style={styles.popularChip}
@@ -107,21 +231,15 @@ export default function DishDetails({ route, navigation }) {
               Populaire
             </Chip>
           )}
+          
           <TouchableOpacity
             style={styles.favoriteButton}
-            onPress={() => {
-              if (checkIsFavorite(dish.id)) {
-                removeFromFavorites(dish.id);
-              } else {
-                addToFavorites(dish);
-              }
-              setIsFavorite(!isFavorite);
-            }}
+            onPress={toggleFavorite}
           >
             <Ionicons
-              name={checkIsFavorite(dish.id) ? 'heart' : 'heart-outline'}
+              name={isFavorite(dish.id) ? 'heart' : 'heart-outline'}
               size={28}
-              color={checkIsFavorite(dish.id) ? '#E91E63' : '#333'}
+              color={isFavorite(dish.id) ? '#E91E63' : '#333'}
             />
           </TouchableOpacity>
         </View>
@@ -133,7 +251,9 @@ export default function DishDetails({ route, navigation }) {
             <View style={styles.nameRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.dishName}>{dish.name}</Text>
-                <Text style={styles.dishDescription}>{dish.description}</Text>
+                {dish.description && (
+                  <Text style={styles.dishDescription}>{dish.description}</Text>
+                )}
               </View>
             </View>
 
@@ -142,64 +262,77 @@ export default function DishDetails({ route, navigation }) {
               <View style={styles.ratingCard}>
                 <View style={styles.ratingRow}>
                   <Ionicons name="star" size={20} color="#FFC107" />
-                  <Text style={styles.ratingText}>{dish.rating}</Text>
+                  <Text style={styles.ratingText}>
+                    {parseFloat(dish.average_rating || 0).toFixed(1)}
+                  </Text>
                 </View>
                 <Text style={styles.ratingLabel}>Évaluation</Text>
               </View>
 
               <View style={styles.reviewsCard}>
-                <Text style={styles.reviewsNumber}>{dish.reviews}</Text>
+                <Text style={styles.reviewsNumber}>{dish.total_ratings || 0}</Text>
                 <Text style={styles.reviewsLabel}>Avis</Text>
               </View>
 
-              <View style={styles.timeCard}>
-                <View style={styles.timeRow}>
-                  <Ionicons name="time-outline" size={20} color="#5D0EC0" />
-                  <Text style={styles.timeText}>{dish.time}</Text>
+              {dish.preparation_time && (
+                <View style={styles.timeCard}>
+                  <View style={styles.timeRow}>
+                    <Ionicons name="time-outline" size={20} color="#5D0EC0" />
+                    <Text style={styles.timeText}>{dish.preparation_time} min</Text>
+                  </View>
+                  <Text style={styles.timeLabel}>Temps</Text>
                 </View>
-                <Text style={styles.timeLabel}>Temps</Text>
-              </View>
+              )}
             </View>
           </View>
 
-          {/* Section taille du plat */}
-          <View style={styles.sizeSection}>
-            <Text style={styles.sizeLabel}>Choisissez votre taille</Text>
-            <View style={styles.sizeContainer}>
-              {sizes.map((size) => (
-                <TouchableOpacity
-                  key={size.id}
-                  style={[
-                    styles.sizeOption,
-                    selectedSize === size.id && styles.sizeOptionSelected,
-                  ]}
-                  onPress={() => setSelectedSize(size.id)}
-                >
-                  <Text
+          {/* Section formats/tailles si disponibles */}
+          {sizes.length > 0 && (
+            <View style={styles.sizeSection}>
+              <Text style={styles.sizeLabel}>Choisissez votre format</Text>
+              <View style={styles.sizeContainer}>
+                {sizes.map((size) => (
+                  <TouchableOpacity
+                    key={size.id}
                     style={[
-                      styles.sizeOptionLabel,
-                      selectedSize === size.id && styles.sizeOptionLabelSelected,
+                      styles.sizeOption,
+                      selectedSize === size.id && styles.sizeOptionSelected,
+                      !size.is_available && styles.sizeOptionDisabled,
                     ]}
+                    onPress={() => size.is_available && setSelectedSize(size.id)}
+                    disabled={!size.is_available}
                   >
-                    {size.label}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.sizeOptionPrice,
-                      selectedSize === size.id && styles.sizeOptionPriceSelected,
-                    ]}
-                  >
-                    {Math.round(size.price)} FCFA
-                  </Text>
-                  {selectedSize === size.id && (
-                    <View style={styles.checkmarkContainer}>
-                      <Ionicons name="checkmark-circle" size={24} color="#5D0EC0" />
-                    </View>
-                  )}
-                </TouchableOpacity>
-              ))}
+                    <Text
+                      style={[
+                        styles.sizeOptionLabel,
+                        selectedSize === size.id && styles.sizeOptionLabelSelected,
+                        !size.is_available && styles.sizeOptionLabelDisabled,
+                      ]}
+                    >
+                      {size.name}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.sizeOptionPrice,
+                        selectedSize === size.id && styles.sizeOptionPriceSelected,
+                        !size.is_available && styles.sizeOptionPriceDisabled,
+                      ]}
+                    >
+                      {parseFloat(size.price).toFixed(0)} FCFA
+                    </Text>
+                    {!size.is_available && (
+                      <Text style={styles.unavailableText}>Indisponible</Text>
+                    )}
+                    {selectedSize === size.id && size.is_available && (
+                      <View style={styles.checkmarkContainer}>
+                        <Ionicons name="checkmark-circle" size={24} color="#5D0EC0" />
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
-          </View>
+          )}
 
           {/* Section détails supplémentaires */}
           <Card style={styles.detailsCard}>
@@ -275,20 +408,22 @@ export default function DishDetails({ route, navigation }) {
       <View style={styles.footer}>
         <View style={styles.priceSection}>
           <Text style={styles.priceLabel}>Prix total</Text>
-          <Text style={styles.totalPrice}>{totalPrice} FCFA</Text>
+          <Text style={styles.totalPrice}>{parseFloat(totalPrice).toFixed(0)} FCFA</Text>
           <Text style={styles.priceDetail}>
-            {quantity}x {selectedSize} • {Math.round(dish.price * sizeMultipliers[selectedSize])} FCFA/unité
+            {quantity}x • {parseFloat(getCurrentPrice()).toFixed(0)} FCFA/unité
           </Text>
         </View>
         <Button
-          mode="contained"
-          style={styles.addButton}
-          labelStyle={styles.addButtonLabel}
-          onPress={addToCart}
-          icon="cart-plus"
-        >
-          Ajouter
-        </Button>
+           mode="contained"
+           style={[styles.addButton, addingToCart && { opacity: 0.6 }]}
+           labelStyle={styles.addButtonLabel}
+           onPress={addToCart}
+           icon={addingToCart ? undefined : 'cart-plus'}
+           disabled={!dish.is_available || (sizes.length > 0 && !selectedSize) || addingToCart}
+           loading={addingToCart}
+         >
+           {!dish.is_available ? 'Indisponible' : addingToCart ? 'Ajout...' : 'Ajouter'}
+         </Button>
       </View>
     </SafeAreaView>
   );
@@ -298,6 +433,16 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#fff',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: '#666',
   },
   header: {
     flexDirection: 'row',
@@ -329,7 +474,11 @@ const styles = StyleSheet.create({
   mainImage: {
     width: '100%',
     height: '100%',
-    resizeMode: 'cover',
+  },
+  placeholderImage: {
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   popularChip: {
     position: 'absolute',
@@ -455,7 +604,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#999',
   },
-  // Styles pour la section taille
   sizeSection: {
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -489,6 +637,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#F3E5F5',
     borderColor: '#5D0EC0',
   },
+  sizeOptionDisabled: {
+    opacity: 0.5,
+    backgroundColor: '#fafafa',
+  },
   sizeOptionLabel: {
     fontSize: 14,
     fontWeight: '600',
@@ -498,6 +650,9 @@ const styles = StyleSheet.create({
   sizeOptionLabelSelected: {
     color: '#5D0EC0',
   },
+  sizeOptionLabelDisabled: {
+    color: '#999',
+  },
   sizeOptionPrice: {
     fontSize: 16,
     fontWeight: 'bold',
@@ -505,6 +660,14 @@ const styles = StyleSheet.create({
   },
   sizeOptionPriceSelected: {
     color: '#5D0EC0',
+  },
+  sizeOptionPriceDisabled: {
+    color: '#999',
+  },
+  unavailableText: {
+    fontSize: 10,
+    color: '#E91E63',
+    marginTop: 4,
   },
   checkmarkContainer: {
     position: 'absolute',
@@ -570,7 +733,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#333',
   },
-  // Styles pour le formulaire de notes
   notesSection: {
     backgroundColor: '#fff',
     borderRadius: 12,
@@ -655,4 +817,4 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#fff',
   },
-});
+}); 

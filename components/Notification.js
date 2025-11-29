@@ -1,7 +1,8 @@
 // ============================================
 // components/Notification.js
+// Composant de notifications avec API réelle
 // ============================================
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,93 +12,39 @@ import {
   StyleSheet,
   Pressable,
   Alert,
+  RefreshControl,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-
-// Données simulées de notifications
-const MOCK_NOTIFICATIONS = [
-  {
-    id: 1,
-    title: 'Commande confirmée',
-    message: 'Votre commande #12345 a été confirmée',
-    type: 'success',
-    icon: 'checkmark-circle',
-    timestamp: '2 min',
-    read: false,
-  },
-  {
-    id: 2,
-    title: 'En préparation',
-    message: 'Votre plat Poulet Yassa est en préparation',
-    type: 'info',
-    icon: 'time',
-    timestamp: '10 min',
-    read: false,
-  },
-  {
-    id: 3,
-    title: 'Promo disponible',
-    message: 'Obtenez 20% de réduction sur les desserts !',
-    type: 'promo',
-    icon: 'gift',
-    timestamp: '1 heure',
-    read: true,
-  },
-  {
-    id: 4,
-    title: 'Livraison en cours',
-    message: 'Votre commande arrive dans 15 min',
-    type: 'delivery',
-    icon: 'bicycle',
-    timestamp: '2 heures',
-    read: true,
-  },
-  {
-    id: 5,
-    title: 'Avis client',
-    message: 'Comment avez-vous trouvé votre commande ?',
-    type: 'feedback',
-    icon: 'star',
-    timestamp: '3 heures',
-    read: true,
-  },
-];
+import { useNotification } from '../context/NotificationContext';
 
 export default function Notification() {
+  const {
+    notifications,
+    unreadCount,
+    loading,
+    markNotificationAsRead,
+    markAllAsRead,
+    clearAllNotifications,
+    removeNotification,
+    refresh,
+  } = useNotification();
+
   const [modalVisible, setModalVisible] = useState(false);
-  const [notifications, setNotifications] = useState(MOCK_NOTIFICATIONS);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const unreadCount = notifications.filter((notif) => !notif.read).length;
-
-  const getNotificationColor = (type) => {
-    switch (type) {
-      case 'success':
-        return '#4CAF50';
-      case 'info':
-        return '#2196F3';
-      case 'promo':
-        return '#5D0EC0';
-      case 'delivery':
-        return '#FF9800';
-      case 'feedback':
-        return '#9C27B0';
-      default:
-        return '#757575';
-    }
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await refresh();
+    setRefreshing(false);
   };
 
-  const handleMarkAsRead = (notificationId) => {
-    setNotifications(
-      notifications.map((notif) =>
-        notif.id === notificationId ? { ...notif, read: true } : notif
-      )
-    );
+  const handleMarkAsRead = async (notificationId) => {
+    await markNotificationAsRead(notificationId);
   };
 
   const handleDeleteNotification = (notificationId) => {
-    setNotifications(
-      notifications.filter((notif) => notif.id !== notificationId)
-    );
+    removeNotification(notificationId);
   };
 
   const handleClearAll = () => {
@@ -109,30 +56,37 @@ export default function Notification() {
         {
           text: 'Effacer',
           style: 'destructive',
-          onPress: () => setNotifications([]),
+          onPress: async () => {
+            await clearAllNotifications();
+            setModalVisible(false);
+          },
         },
       ]
     );
+  };
+
+  const handleMarkAllAsRead = async () => {
+    await markAllAsRead();
   };
 
   const renderNotificationItem = ({ item }) => (
     <Pressable
       style={[
         styles.notificationItem,
-        !item.read && styles.notificationItemUnread,
+        !item.is_read && styles.notificationItemUnread,
       ]}
       onPress={() => handleMarkAsRead(item.id)}
     >
       <View
         style={[
           styles.notificationIcon,
-          { backgroundColor: getNotificationColor(item.type) + '20' },
+          { backgroundColor: item.color + '20' },
         ]}
       >
         <Ionicons
-          name={item.icon}
+          name={item.icon || 'notifications'}
           size={24}
-          color={getNotificationColor(item.type)}
+          color={item.color || '#757575'}
         />
       </View>
 
@@ -140,19 +94,26 @@ export default function Notification() {
         <Text
           style={[
             styles.notificationTitle,
-            !item.read && styles.notificationTitleBold,
+            !item.is_read && styles.notificationTitleBold,
           ]}
         >
           {item.title}
         </Text>
-        <Text style={styles.notificationMessage}>{item.message}</Text>
-        <Text style={styles.notificationTime}>{item.timestamp}</Text>
+        <Text style={styles.notificationMessage} numberOfLines={2}>
+          {item.message}
+        </Text>
+        <View style={styles.notificationMeta}>
+          <Text style={styles.notificationTime}>{item.timestamp}</Text>
+          {item.order_id && (
+            <Text style={styles.notificationOrderId}>
+              Commande #{item.order_id}
+            </Text>
+          )}
+        </View>
       </View>
 
       <View style={styles.notificationActions}>
-        {!item.read && (
-          <View style={styles.unreadDot} />
-        )}
+        {!item.is_read && <View style={styles.unreadDot} />}
         <TouchableOpacity
           onPress={() => handleDeleteNotification(item.id)}
           style={styles.deleteButton}
@@ -173,7 +134,9 @@ export default function Notification() {
         <Ionicons name="notifications-outline" size={24} color="#495057" />
         {unreadCount > 0 && (
           <View style={styles.unreadBadge}>
-            <Text style={styles.badgeText}>{unreadCount}</Text>
+            <Text style={styles.badgeText}>
+              {unreadCount > 9 ? '9+' : unreadCount}
+            </Text>
           </View>
         )}
       </TouchableOpacity>
@@ -197,10 +160,23 @@ export default function Notification() {
               <View>
                 <Text style={styles.modalTitle}>Notifications</Text>
                 <Text style={styles.modalSubtitle}>
-                  {unreadCount} non lue{unreadCount > 1 ? 's' : ''}
+                  {unreadCount} non lue{unreadCount !== 1 ? 's' : ''}
                 </Text>
               </View>
               <View style={styles.headerActions}>
+                {unreadCount > 0 && (
+                  <TouchableOpacity
+                    onPress={handleMarkAllAsRead}
+                    style={styles.markAllButton}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name="checkmark-done"
+                      size={20}
+                      color="#5D0EC0"
+                    />
+                  </TouchableOpacity>
+                )}
                 {notifications.length > 0 && (
                   <TouchableOpacity
                     onPress={handleClearAll}
@@ -218,7 +194,12 @@ export default function Notification() {
               </View>
             </View>
 
-            {notifications.length === 0 ? (
+            {loading && !notifications.length ? (
+              <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#5D0EC0" />
+                <Text style={styles.loadingText}>Chargement...</Text>
+              </View>
+            ) : notifications.length === 0 ? (
               <View style={styles.emptyContainer}>
                 <Ionicons
                   name="notifications-off-outline"
@@ -237,6 +218,12 @@ export default function Notification() {
                 keyExtractor={(item) => item.id.toString()}
                 contentContainerStyle={styles.notificationsList}
                 showsVerticalScrollIndicator={false}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={onRefresh}
+                  />
+                }
               />
             )}
           </Pressable>
@@ -277,7 +264,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: '80%',
+    maxHeight: '85%',
     paddingBottom: 20,
   },
   modalHeader: {
@@ -302,6 +289,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  markAllButton: {
+    padding: 8,
   },
   clearButton: {
     padding: 8,
@@ -356,9 +346,19 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     lineHeight: 18,
   },
+  notificationMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   notificationTime: {
     fontSize: 12,
     color: '#CED4DA',
+  },
+  notificationOrderId: {
+    fontSize: 11,
+    color: '#5D0EC0',
+    fontWeight: '600',
   },
   notificationActions: {
     flexDirection: 'row',
@@ -373,6 +373,17 @@ const styles = StyleSheet.create({
   },
   deleteButton: {
     padding: 4,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 80,
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: '#666',
   },
   emptyContainer: {
     alignItems: 'center',

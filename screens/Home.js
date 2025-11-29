@@ -1,96 +1,205 @@
 // ============================================
-// screens/Home.js
+// screens/Home.js - Configuré avec API réelle et gestion correcte des prix
 // ============================================
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   ScrollView,
   TouchableOpacity,
   Image,
+  ActivityIndicator,
+  RefreshControl,
+  Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context'; // Import correct
+import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Card,
   Chip,
   IconButton,
 } from 'react-native-paper';
-import { Ionicons } from '@expo/vector-icons'; // Pour les icônes
+import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet } from 'react-native';
 import { useCart } from '../context/CartContext';
+import MenuService from '../services/MenuService';
+import * as orderService from '../services/orderService';
+import favoritesService from '../services/favoritesService';
 
 export default function Home({ navigation }) {
-  const [cart, setCart] = useState([]);
-  const { isFavorite, addToFavorites, removeFromFavorites, addToCart: addDishToCart } = useCart();
+   const [categories, setCategories] = useState([]);
+   const [popularDishes, setPopularDishes] = useState([]);
+   const [loading, setLoading] = useState(true);
+   const [refreshing, setRefreshing] = useState(false);
+   const [addingToCart, setAddingToCart] = useState(null);
+   const [deviceId, setDeviceId] = useState(null);
+   const { isFavorite, toggleFavorite, addToCart } = useCart();
 
-  const categories = [
-    { id: 1, name: 'Entrées', icon: 'restaurant', color: '#4CAF50' },
-    { id: 2, name: 'Plats', icon: 'fast-food', color: '#FF9800' },
-    { id: 3, name: 'Desserts', icon: 'ice-cream', color: '#E91E63' },
-    { id: 4, name: 'Boissons', icon: 'wine', color: '#2196F3' },
-  ];
+   // Récupérer le device_id au chargement
+   useEffect(() => {
+     const getDeviceId = async () => {
+       try {
+         let device = await AsyncStorage.getItem('device_id');
+           if (!device) {
+             device = `device_${Date.now()}`;
+             await AsyncStorage.setItem('device_id', device);
+         }
+         setDeviceId(device);
+       } catch (error) {
+         console.error('Erreur device_id:', error);
+       }
+     };
+     getDeviceId();
+   }, []);
 
-  const dishes = [
-    {
-      id: 1,
-      name: 'Poulet Yassa',
-      description: 'Poulet mariné aux oignons et citron',
-      price: 3500,
-      image: 'https://via.placeholder.com/300x200/FF9800/FFFFFF?text=Poulet+Yassa',
-      rating: 4.8,
-      reviews: 124,
-      time: '30 min',
-      popular: true,
-    },
-    {
-      id: 2,
-      name: 'Riz au Gras',
-      description: 'Riz cuisiné à la sauce tomate',
-      price: 2500,
-      image: 'https://via.placeholder.com/300x200/F44336/FFFFFF?text=Riz+au+Gras',
-      rating: 4.6,
-      reviews: 98,
-      time: '25 min',
-    },
-    {
-      id: 3,
-      name: 'Alloco Poisson',
-      description: 'Bananes plantains frites + poisson',
-      price: 2000,
-      image: 'https://via.placeholder.com/300x200/FFC107/FFFFFF?text=Alloco',
-      rating: 4.7,
-      reviews: 156,
-      time: '20 min',
-      popular: true,
-    },
-    {
-      id: 4,
-      name: 'Salade Niçoise',
-      description: 'Salade fraîche aux légumes',
-      price: 1500,
-      image: 'https://via.placeholder.com/300x200/4CAF50/FFFFFF?text=Salade',
-      rating: 4.5,
-      reviews: 67,
-      time: '15 min',
-    },
-  ];
-
-  const addToCart = (dish) => {
-    setCart([...cart, dish]);
-    addDishToCart(dish);
+  // Mapping des icônes pour les catégories
+  const categoryIcons = {
+    'entrees': 'restaurant',
+    'plats': 'fast-food',
+    'plats-principaux': 'fast-food',
+    'desserts': 'ice-cream',
+    'boissons': 'wine',
   };
 
-  const toggleFavorite = (dish) => {
-    if (isFavorite(dish.id)) {
-      removeFromFavorites(dish.id);
-    } else {
-      addToFavorites(dish);
+  const categoryColors = {
+    'entrees': '#4CAF50',
+    'plats': '#FF9800',
+    'plats-principaux': '#FF9800',
+    'desserts': '#E91E63',
+    'boissons': '#2196F3',
+  };
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      await Promise.all([
+        loadCategories(),
+        loadPopularDishes(),
+      ]);
+    } catch (error) {
+      console.error('Erreur lors du chargement des données:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
+  const loadCategories = async () => {
+    try {
+      const result = await MenuService.getCategories();
+      if (result.success && Array.isArray(result.data)) {
+        setCategories(result.data);
+      } else {
+        console.error('Erreur catégories:', result.error);
+        setCategories([]);
+      }
+    } catch (error) {
+      console.error('Exception catégories:', error);
+      setCategories([]);
+    }
+  };
+
+  const loadPopularDishes = async () => {
+    try {
+      const result = await MenuService.getPopularItems();
+      if (result.success && Array.isArray(result.data)) {
+        setPopularDishes(result.data);
+      } else {
+        console.error('Erreur plats populaires:', result.error);
+        setPopularDishes([]);
+      }
+    } catch (error) {
+      console.error('Exception plats populaires:', error);
+      setPopularDishes([]);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
+  };
+
+  const handleToggleFavorite = async (dish) => {
+    await toggleFavorite(dish);
+  };
+
+  const handleCategoryPress = (category) => {
+    navigation.navigate('Search', { 
+      categorySlug: category.slug,
+      categoryName: category.name 
+    });
+  };
+
+  const handleAddToCart = (dish) => {
+    // Toujours rediriger vers DishDetails pour ajouter au panier
+    navigation.navigate('DishDetails', { dish });
+  };
+
+  const addToCartSimple = async (dish) => {
+    if (!deviceId) {
+      Alert.alert('Erreur', 'ID appareil non trouvé');
+      return;
+    }
+
+    setAddingToCart(dish.id);
+    try {
+      // Récupérer ou créer le panier
+      const cart = await orderService.getOrCreateCart(deviceId);
+      
+      // Utiliser le prix min_price du plat comme prix par défaut
+      // (les formats complets sont récupérés dans DishDetails.js)
+      const sizeId = 1; // Format par défaut
+      const price = dish.min_price;
+      
+      await orderService.addItemToCart(
+        cart.id,
+        dish.id,
+        sizeId,
+        1,
+        ''
+      );
+
+      // Ajouter au panier local aussi
+      addToCart({
+        ...dish,
+        price: price,
+        size: sizeId,
+        menu_item_details: dish
+      });
+
+      Alert.alert('Succès', `${dish.name} ajouté au panier`);
+    } catch (error) {
+      console.error('Erreur ajout panier:', error);
+      Alert.alert('Erreur', 'Impossible d\'ajouter au panier');
+    } finally {
+      setAddingToCart(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#5D0EC0" />
+          <Text style={styles.loadingText}>Chargement...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView showsVerticalScrollIndicator={false} style={styles.content}>
+      <ScrollView 
+        showsVerticalScrollIndicator={false} 
+        style={styles.content}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
         {/* Banner */}
         <View style={styles.banner}>
           <View style={styles.bannerContent}>
@@ -98,7 +207,10 @@ export default function Home({ navigation }) {
             <Text style={styles.bannerSubtitle}>
               Les meilleurs plats livrés chez vous
             </Text>
-            <TouchableOpacity style={styles.bannerButton}>
+            <TouchableOpacity 
+              style={styles.bannerButton}
+              onPress={() => navigation.navigate('Search')}
+            >
               <Text style={styles.bannerButtonText}>Commander maintenant</Text>
             </TouchableOpacity>
           </View>
@@ -110,15 +222,35 @@ export default function Home({ navigation }) {
           <Text style={styles.sectionTitle}>Catégories</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
             <View style={styles.categoriesContainer}>
-              {categories.map((cat) => (
-                <TouchableOpacity
-                  key={cat.id}
-                  style={[styles.categoryCard, { backgroundColor: cat.color + '20' }]}
-                >
-                  <Ionicons name={cat.icon} size={40} color={cat.color} />
-                  <Text style={styles.categoryText}>{cat.name}</Text>
-                </TouchableOpacity>
-              ))}
+              {categories && categories.length > 0 ? (
+                categories.map((cat) => {
+                  const icon = categoryIcons[cat.slug] || 'fast-food';
+                  const color = categoryColors[cat.slug] || '#FF9800';
+                  
+                  return (
+                    <TouchableOpacity
+                      key={cat.id}
+                      style={[styles.categoryCard, { backgroundColor: color + '20' }]}
+                      onPress={() => handleCategoryPress(cat)}
+                    >
+                      {cat.icon ? (
+                        <Image 
+                          source={{ uri: cat.icon }} 
+                          style={styles.categoryIcon}
+                        />
+                      ) : (
+                        <Ionicons name={icon} size={40} color={color} />
+                      )}
+                      <Text style={styles.categoryText}>{cat.name}</Text>
+                      <Text style={styles.categoryCount}>
+                        {cat.items_count} plat{cat.items_count > 1 ? 's' : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              ) : (
+                <Text style={styles.emptyCategoryText}>Aucune catégorie disponible</Text>
+              )}
             </View>
           </ScrollView>
         </View>
@@ -130,72 +262,112 @@ export default function Home({ navigation }) {
               <Ionicons name="flame" size={24} color="#5D0EC0" />
               <Text style={styles.sectionTitle}>Plats Populaires</Text>
             </View>
-            <TouchableOpacity onPress={() => navigation.navigate('search')}>
+            <TouchableOpacity onPress={() => navigation.navigate('Search')}>
               <Text style={styles.seeAll}>Voir tout</Text>
             </TouchableOpacity>
           </View>
 
-          {dishes.map((dish) => (
-            <TouchableOpacity
-              key={dish.id}
-              onPress={() => navigation.navigate('DishDetails', { dish })}
-            >
-              <Card style={styles.dishCard}>
-                <View style={styles.dishCardContent}>
-                <Image
-                  source={{ uri: dish.image }}
-                  style={styles.dishImage}
-                />
+          {popularDishes.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Text style={styles.emptyText}>Aucun plat disponible</Text>
+            </View>
+          ) : (
+            popularDishes.map((dish) => (
+              <TouchableOpacity
+                key={dish.id}
+                onPress={() => navigation.navigate('DishDetails', { dish })}
+              >
+                <Card style={styles.dishCard}>
+                  <View style={styles.dishCardContent}>
+                    {dish.image ? (
+                      <Image
+                        source={{ uri: dish.image }}
+                        style={styles.dishImage}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View style={[styles.dishImage, styles.placeholderImage]}>
+                        <Ionicons name="image-outline" size={60} color="#ccc" />
+                      </View>
+                    )}
 
-                {dish.popular && (
-                  <Chip
-                    icon="fire"
-                    style={styles.popularChip}
-                    textStyle={styles.popularChipText}
-                  >
-                    Populaire
-                  </Chip>
-                )}
-
-                <IconButton
-                  icon={isFavorite(dish.id) ? 'heart' : 'heart-outline'}
-                  iconColor={isFavorite(dish.id) ? '#E91E63' : '#666'}
-                  size={24}
-                  style={styles.favoriteButton}
-                  onPress={() => toggleFavorite(dish)}
-                />
-
-                <View style={styles.dishInfo}>
-                  <Text style={styles.dishName}>{dish.name}</Text>
-                  <Text style={styles.dishDescription}>{dish.description}</Text>
-
-                  <View style={styles.dishMeta}>
-                    <View style={styles.ratingContainer}>
-                      <Ionicons name="star" size={16} color="#FFC107" />
-                      <Text style={styles.rating}>{dish.rating}</Text>
-                      <Text style={styles.reviews}>({dish.reviews})</Text>
-                    </View>
-
-                    <View style={styles.timeContainer}>
-                      <Ionicons name="time-outline" size={16} color="#666" />
-                      <Text style={styles.time}>{dish.time}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.dishFooter}>
-                    <Text style={styles.price}>{dish.price} FCFA</Text>
-                    <TouchableOpacity
-                      style={styles.addButton}
-                      onPress={() => addToCart(dish)}
+                    <Chip
+                      icon="fire"
+                      style={styles.popularChip}
+                      textStyle={styles.popularChipText}
                     >
-                      <Ionicons name="add" size={20} color="#fff" />
-                    </TouchableOpacity>
+                      Populaire
+                    </Chip>
+
+                    <IconButton
+                       icon={isFavorite(dish.id) ? 'heart' : 'heart-outline'}
+                       iconColor={isFavorite(dish.id) ? '#E91E63' : '#666'}
+                       size={24}
+                       style={styles.favoriteButton}
+                       onPress={() => handleToggleFavorite(dish)}
+                     />
+
+                    <View style={styles.dishInfo}>
+                      <Text style={styles.dishName}>{dish.name}</Text>
+                      {dish.description && (
+                        <Text style={styles.dishDescription} numberOfLines={2}>
+                          {dish.description}
+                        </Text>
+                      )}
+
+                      <View style={styles.dishMeta}>
+                        <View style={styles.ratingContainer}>
+                          <Ionicons name="star" size={16} color="#FFC107" />
+                          <Text style={styles.rating}>
+                            {parseFloat(dish.average_rating || 0).toFixed(1)}
+                          </Text>
+                          <Text style={styles.reviews}>
+                            ({dish.total_ratings || 0})
+                          </Text>
+                        </View>
+
+                        {dish.preparation_time && (
+                          <View style={styles.timeContainer}>
+                            <Ionicons name="time-outline" size={16} color="#666" />
+                            <Text style={styles.time}>
+                              {dish.preparation_time} min
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+
+                      <View style={styles.dishFooter}>
+                        <View>
+                          <Text style={styles.price}>
+                            {parseFloat(dish.min_price).toFixed(0)} FCFA
+                          </Text>
+                          {dish.min_price !== dish.max_price && (
+                            <Text style={styles.priceRange}>
+                              à {parseFloat(dish.max_price).toFixed(0)} FCFA
+                            </Text>
+                          )}
+                        </View>
+                        <TouchableOpacity
+                           style={[
+                             styles.addButton,
+                             addingToCart === dish.id && { opacity: 0.6 }
+                           ]}
+                           onPress={() => handleAddToCart(dish)}
+                           disabled={addingToCart === dish.id}
+                         >
+                           {addingToCart === dish.id ? (
+                             <ActivityIndicator size="small" color="#fff" />
+                           ) : (
+                             <Ionicons name="add" size={20} color="#fff" />
+                           )}
+                         </TouchableOpacity>
+                      </View>
+                    </View>
                   </View>
-                </View>
-              </View>
-            </Card>
-            </TouchableOpacity>
-          ))}
+                </Card>
+              </TouchableOpacity>
+            ))
+          )}
         </View>
 
         <View style={{ height: 100 }} />
@@ -211,6 +383,16 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: '#666',
   },
   banner: {
     backgroundColor: '#5D0EC0',
@@ -287,10 +469,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 12,
   },
+  categoryIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
   categoryText: {
     marginTop: 8,
     fontWeight: '600',
     color: '#333',
+    textAlign: 'center',
+  },
+  categoryCount: {
+    marginTop: 4,
+    fontSize: 12,
+    color: '#666',
   },
   dishCard: {
     marginBottom: 16,
@@ -305,6 +498,11 @@ const styles = StyleSheet.create({
     height: 200,
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
+  },
+  placeholderImage: {
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   popularChip: {
     position: 'absolute',
@@ -375,6 +573,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#5D0EC0',
   },
+  priceRange: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 2,
+  },
   addButton: {
     backgroundColor: '#5D0EC0',
     width: 40,
@@ -383,11 +586,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  fab: {
-    position: 'absolute',
-    margin: 16,
-    right: 0,
-    bottom: 16,
-    backgroundColor: '#5D0EC0',
+  emptyContainer: {
+    padding: 40,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#999',
+  },
+  emptyCategoryText: {
+    fontSize: 14,
+    color: '#999',
+    paddingHorizontal: 16,
   },
 });
